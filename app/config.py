@@ -60,7 +60,9 @@ CORS_ALLOWED_ORIGINS: List[str] = [
     "http://127.0.0.1:3001",
     "http://127.0.0.1:3002",
     "https://nuxt-naive-project-production.up.railway.app",
-    "https://nuxt-quasar-migration-production.up.railway.app"
+    "https://nuxt-quasar-migration-production.up.railway.app",
+    "https://marketplacenuxtui-production.up.railway.app",
+
 ]
 
 CORS_ALLOW_CREDENTIALS = True
