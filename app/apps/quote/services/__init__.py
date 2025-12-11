@@ -1,0 +1,4 @@
+"""
+Qualitas service module
+"""
+
