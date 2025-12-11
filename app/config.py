@@ -59,12 +59,7 @@ CORS_ALLOWED_ORIGINS: List[str] = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
     "http://127.0.0.1:3002",
-    "https://loancalculator2-frontend-production.up.railway.app",
-    "https://loancalculator2-frontend-staging.up.railway.app",
-    "https://loancalculator2-frontend-demo.up.railway.app",
-    "https://www.finva-app.com",
-    "https://loancalculator2-frontend-test-qa.up.railway.app",
-    "https://loancalculator2-frontend.onrender.com",
+    "https://nuxt-naive-project-production.up.railway.app",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
