@@ -114,6 +114,39 @@ class SupabaseStorageService:
             logger.error(f"Error generating signed URL: {str(e)}")
             return None
 
+    def upload_image(self, file_path: str, file_content: bytes, content_type: str = "image/jpeg", bucket_name: str = "marketplace-assets") -> Dict[str, Any]:
+        """
+        Upload an image to a specific Supabase storage bucket.
+
+        Args:
+            file_path: The path where the file should be stored in the bucket.
+            file_content: The file content as bytes.
+            content_type: The MIME type of the file (default: "image/jpeg").
+            bucket_name: The name of the bucket (default: "marketplace-assets").
+
+        Returns:
+            A dictionary with success status, public URL, and response data, or error information.
+        """
+        try:
+            response = self.client.storage.from_(bucket_name).upload(
+                path=file_path,
+                file=file_content,
+                file_options={"content-type": content_type, "upsert": "true"}
+            )
+            
+            # Get public URL
+            public_url = self.client.storage.from_(bucket_name).get_public_url(file_path)
+            
+            return {
+                "success": True,
+                "data": response,
+                "public_url": public_url,
+                "path": file_path
+            }
+        except Exception as e:
+            logger.error(f"Error uploading image: {str(e)}")
+            return {"success": False, "error": str(e)}
+
 
 # Initialize the Supabase storage service
 supabase_storage = SupabaseStorageService()

@@ -85,6 +85,9 @@ app.include_router(quote_router, prefix="/api/quote", tags=["quote"])
 from app.apps.loan.router import router as loan_router
 app.include_router(loan_router, prefix="/api/loan", tags=["loan"])
 
+from app.apps.cms.router import router as cms_router
+app.include_router(cms_router, prefix="/api/cms", tags=["cms"])
+
 
 if __name__ == "__main__":
     import uvicorn
