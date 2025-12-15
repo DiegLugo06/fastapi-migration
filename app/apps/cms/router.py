@@ -10,7 +10,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-
+import httpx
 from app.database import get_async_session
 from app.apps.authentication.dependencies import get_current_user
 from app.apps.authentication.models import User
@@ -240,6 +240,122 @@ async def get_marketplace_content_dynamic(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching marketplace content: {str(e)}"
+        )
+
+
+@router.get("/marketplace/motorcycle/{motorcycle_id}", response_model=MotorcycleCardItem, status_code=status.HTTP_200_OK)
+async def get_marketplace_motorcycle_by_id(
+    motorcycle_id: int,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """
+    Get a single motorcycle by ID for marketplace detail page.
+    Returns formatted data for CMS.
+    """
+    try:
+        # Query motorcycle by ID
+        stmt = text("""
+            SELECT m.id, m.model, m.price, m.color, m.year, m.inner_brand_model,
+                   mb.name as brand_name, m.review_video_url
+            FROM motorcycles m
+            INNER JOIN motorcycle_brands mb ON m.brand_id = mb.id
+            WHERE m.id = :motorcycle_id
+            AND m.active = TRUE
+        """)
+        
+        result = await session.execute(stmt, {
+            "motorcycle_id": motorcycle_id
+        })
+        row = result.fetchone()
+        
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Motorcycle with ID {motorcycle_id} not found"
+            )
+        
+        # Get model name from database
+        model_name = row[1]  # m.model
+        
+        # Normalize model name for filename
+        normalized_model = normalize_model_name_for_filename(model_name)
+        image_filename = f"{normalized_model}.jpg"
+        
+        from app.config import get_supabase_url
+        supabase_url = get_supabase_url()
+        # Extract project ID from URL
+        url_without_protocol = supabase_url.replace("https://", "").replace("http://", "")
+        project_id = url_without_protocol.split(".supabase.co")[0] if ".supabase.co" in url_without_protocol else url_without_protocol.split("/")[0]
+        image_url = f"https://{project_id}.supabase.co/storage/v1/object/public/{IMAGE_BUCKET}/assets/{normalized_model}/{image_filename}"
+
+        # Gallery images - try to get multiple images
+        gallery_images = []
+        supabase = get_supabase_client()
+
+        # List all files in the directory once
+        try:
+            files_in_dir = supabase.storage.from_(IMAGE_BUCKET).list(
+                path=f"assets/{normalized_model}"
+            )
+            # Create a set of existing filenames for quick lookup
+            existing_files = {file['name'] for file in files_in_dir} if files_in_dir else set()
+        except Exception as e:
+            logger.warning(f"Error listing directory: {str(e)}")
+            existing_files = set()
+
+        # Check each numbered image
+        for i in range(1, 10):
+            filename = f"{i}.jpg"
+            image_path = f"assets/{normalized_model}/{filename}"
+            
+            # Check if file exists in the directory listing
+            if filename in existing_files:
+                gallery_url = f"https://{project_id}.supabase.co/storage/v1/object/public/{IMAGE_BUCKET}/{image_path}"
+                gallery_images.append(gallery_url)
+
+        # Get hero image URL
+        hero_image_url = f"https://{project_id}.supabase.co/storage/v1/object/public/{IMAGE_BUCKET}/hero/{image_filename}"
+        
+        # Handle color
+        colors = []
+        if row[3]:  # color field
+            if ',' in row[3]:
+                colors = [c.strip() for c in row[3].split(',')]
+            else:
+                colors = [row[3]]
+        else:
+            colors = ["Negro", "Blanco"]
+        
+        # Format price
+        price_str = f"${row[2]:,.0f}" if row[2] else "$0"
+        
+        # Technical specs defaults (you can enhance this later with actual database fields)
+        technical = {
+            "engine": "N/A",
+            "power": "N/A",
+            "torque": "N/A",
+            "weight": "N/A",
+            "fuelCapacity": "N/A"
+        }
+        
+        return MotorcycleCardItem(
+            id=row[0],
+            image=image_url,
+            hero_image=hero_image_url,
+            name=f"{row[6]} {row[1]}",  # brand_name + model
+            price=price_str,
+            colors=colors,
+            technical=technical,
+            images=gallery_images
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching motorcycle by ID: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching motorcycle: {str(e)}"
         )
 
 
