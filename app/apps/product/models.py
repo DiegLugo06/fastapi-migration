@@ -34,6 +34,13 @@ class Motorcycles(SQLModel, table=True):
     color: Optional[str] = Field(default=None, max_length=100)
     active: Optional[bool] = Field(default=True, index=True)
     review_video_url: Optional[str] = Field(default=None, max_length=500)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    
+    # Relationship
+    specifications: Optional["MotorcycleSpecifications"] = Relationship(
+        back_populates="motorcycle",
+        sa_relationship_kwargs={"uselist": False}
+    )
 
 
 class MotorcycleQualitasAmis(SQLModel, table=True):
@@ -65,6 +72,55 @@ class Discounts(SQLModel, table=True):
     sucursal_id: Optional[int] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now, sa_column_kwargs={"onupdate": datetime.now})
+
+
+class MotorcycleSpecifications(SQLModel, table=True):
+    """
+    Motorcycle specifications model
+    Table: motorcycle_specifications
+    One-to-one relationship with motorcycles
+    """
+    __tablename__ = "motorcycle_specifications"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    motorcycle_id: int = Field(
+        foreign_key="motorcycles.id",
+        unique=True,
+        index=True
+    )
+    
+    # Technical Specifications
+    engine: Optional[str] = Field(default=None, max_length=200)
+    displacement: Optional[str] = Field(default=None, max_length=50)  # Cilindrada
+    bore_x_stroke: Optional[str] = Field(default=None, max_length=100)  # Diámetro x carrera
+    power: Optional[str] = Field(default=None, max_length=100)
+    torque: Optional[str] = Field(default=None, max_length=100)
+    starting_system: Optional[str] = Field(default=None, max_length=100)  # Arranque
+    fuel_capacity: Optional[str] = Field(default=None, max_length=50)
+    transmission: Optional[str] = Field(default=None, max_length=100)
+    cooling: Optional[str] = Field(default=None, max_length=100)
+    ignition: Optional[str] = Field(default=None, max_length=100)
+    
+    # Chassis Specifications
+    frame: Optional[str] = Field(default=None, max_length=200)
+    front_suspension: Optional[str] = Field(default=None, max_length=200)
+    rear_suspension: Optional[str] = Field(default=None, max_length=200)
+    front_brake: Optional[str] = Field(default=None, max_length=200)
+    rear_brake: Optional[str] = Field(default=None, max_length=200)
+    front_tire: Optional[str] = Field(default=None, max_length=100)
+    rear_tire: Optional[str] = Field(default=None, max_length=100)
+    
+    # Dimensions
+    weight: Optional[str] = Field(default=None, max_length=50)
+    length: Optional[str] = Field(default=None, max_length=50)
+    width: Optional[str] = Field(default=None, max_length=50)
+    height: Optional[str] = Field(default=None, max_length=50)
+    wheelbase: Optional[str] = Field(default=None, max_length=50)
+    seat_height: Optional[str] = Field(default=None, max_length=50)
+    ground_clearance: Optional[str] = Field(default=None, max_length=50)
+    
+    # Relationship
+    motorcycle: Optional["Motorcycles"] = Relationship(back_populates="specifications")
 
 
 class StaticQuotes(SQLModel, table=True):

@@ -21,6 +21,7 @@ class MotorcycleCardItem(BaseModel):
     technical: Dict[str, str]
     hero_image: Optional[str] = None
     images: Optional[List[str]] = None
+    description: Optional[str] = None
 
 
 class BankItem(BaseModel):

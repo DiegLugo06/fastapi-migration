@@ -253,12 +253,18 @@ async def get_marketplace_motorcycle_by_id(
     Returns formatted data for CMS.
     """
     try:
-        # Query motorcycle by ID
+        # Query motorcycle by ID with specifications
         stmt = text("""
             SELECT m.id, m.model, m.price, m.color, m.year, m.inner_brand_model,
-                   mb.name as brand_name, m.review_video_url
+                   mb.name as brand_name, m.review_video_url, m.description,
+                   ms.engine, ms.displacement, ms.bore_x_stroke, ms.power, ms.torque,
+                   ms.starting_system, ms.fuel_capacity, ms.transmission, ms.cooling, ms.ignition,
+                   ms.frame, ms.front_suspension, ms.rear_suspension, ms.front_brake, ms.rear_brake,
+                   ms.front_tire, ms.rear_tire, ms.weight, ms.length, ms.width, ms.height,
+                   ms.wheelbase, ms.seat_height, ms.ground_clearance
             FROM motorcycles m
             INNER JOIN motorcycle_brands mb ON m.brand_id = mb.id
+            LEFT JOIN motorcycle_specifications ms ON m.id = ms.motorcycle_id
             WHERE m.id = :motorcycle_id
             AND m.active = TRUE
         """)
@@ -329,14 +335,78 @@ async def get_marketplace_motorcycle_by_id(
         # Format price
         price_str = f"${row[2]:,.0f}" if row[2] else "$0"
         
-        # Technical specs defaults (you can enhance this later with actual database fields)
-        technical = {
-            "engine": "N/A",
-            "power": "N/A",
-            "torque": "N/A",
-            "weight": "N/A",
-            "fuelCapacity": "N/A"
-        }
+        # Build technical specs from database or use defaults
+        # Row indices after adding description and specs:
+        # 0: id, 1: model, 2: price, 3: color, 4: year, 5: inner_brand_model,
+        # 6: brand_name, 7: review_video_url, 8: description,
+        # 9-28: specifications fields
+        technical = {}
+        
+        # Technical Specifications
+        if row[9]:  # engine
+            technical["engine"] = row[9]
+        if row[10]:  # displacement
+            technical["displacement"] = row[10]
+        if row[11]:  # bore_x_stroke
+            technical["bore_x_stroke"] = row[11]
+        if row[12]:  # power
+            technical["power"] = row[12]
+        if row[13]:  # torque
+            technical["torque"] = row[13]
+        if row[14]:  # starting_system
+            technical["starting_system"] = row[14]
+        if row[15]:  # fuel_capacity
+            technical["fuel_capacity"] = row[15]
+            technical["fuelCapacity"] = row[15]  # Also add camelCase for backward compatibility
+        if row[16]:  # transmission
+            technical["transmission"] = row[16]
+        if row[17]:  # cooling
+            technical["cooling"] = row[17]
+        if row[18]:  # ignition
+            technical["ignition"] = row[18]
+        
+        # Chassis Specifications
+        if row[19]:  # frame
+            technical["frame"] = row[19]
+        if row[20]:  # front_suspension
+            technical["front_suspension"] = row[20]
+            technical["frontSuspension"] = row[20]  # camelCase
+        if row[21]:  # rear_suspension
+            technical["rear_suspension"] = row[21]
+            technical["rearSuspension"] = row[21]  # camelCase
+        if row[22]:  # front_brake
+            technical["front_brake"] = row[22]
+            technical["frontBrake"] = row[22]  # camelCase
+        if row[23]:  # rear_brake
+            technical["rear_brake"] = row[23]
+            technical["rearBrake"] = row[23]  # camelCase
+        if row[24]:  # front_tire
+            technical["front_tire"] = row[24]
+            technical["frontTire"] = row[24]  # camelCase
+        if row[25]:  # rear_tire
+            technical["rear_tire"] = row[25]
+            technical["rearTire"] = row[25]  # camelCase
+        
+        # Dimensions
+        if row[26]:  # weight
+            technical["weight"] = row[26]
+        if row[27]:  # length
+            technical["length"] = row[27]
+        if row[28]:  # width
+            technical["width"] = row[28]
+        if row[29]:  # height
+            technical["height"] = row[29]
+        if row[30]:  # wheelbase
+            technical["wheelbase"] = row[30]
+        if row[31]:  # seat_height
+            technical["seat_height"] = row[31]
+            technical["seatHeight"] = row[31]  # camelCase
+        if row[32]:  # ground_clearance
+            technical["ground_clearance"] = row[32]
+            technical["groundClearance"] = row[32]  # camelCase
+        
+        # Get description
+        description = row[8] if row[8] else None
         
         return MotorcycleCardItem(
             id=row[0],
@@ -345,8 +415,15 @@ async def get_marketplace_motorcycle_by_id(
             name=f"{row[6]} {row[1]}",  # brand_name + model
             price=price_str,
             colors=colors,
-            technical=technical,
-            images=gallery_images
+            technical=technical if technical else {
+                "engine": "N/A",
+                "power": "N/A",
+                "torque": "N/A",
+                "weight": "N/A",
+                "fuelCapacity": "N/A"
+            },
+            images=gallery_images,
+            description=description
         )
         
     except HTTPException:
