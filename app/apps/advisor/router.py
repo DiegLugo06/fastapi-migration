@@ -79,42 +79,60 @@ async def get_stores(
 ):
     """
     Endpoint to get stores with flexible filtering.
+    Optimized query with JOIN to avoid N+1 queries.
+    Default filter: Only returns stores with razon_social = "Ferbel Norte SA de CV"
+    
     Query Parameters:
-        Any field from Sucursal model can be used as a filter.
-        For 'brand' parameter: accepts brand name (converts to brand_id)
-        For string fields: performs case-insensitive partial matching
-        For boolean fields: accepts 'true'/'false' (case-insensitive)
-        For 'holding' parameter: if set to 'ferbel_group', filters stores to only Ferbel Norte SA de CV or Comercializadora Promotodo SA de CV
-        Multiple filters are combined with AND logic
+        holding (optional): If set to 'Sfera', filters stores differently
+        brand (optional): Filter by brand name (converts to brand_id)
+        credit_card_payment_method (optional): Filter by credit card payment method
+        active (optional): Filter by active status (default: true)
     """
     logger.info("Attempting to get stores with filters")
     try:
-        # Create mutable copy of query params
         filter_params = {}
         
-        # Always filter for active stores only
-        query = select(Sucursal).where(Sucursal.active == True)
+        # Optimized query with JOIN to get brand name in a single query
+        # Select only the fields we need for better performance
+        query = select(
+            Sucursal.id,
+            Sucursal.nombre,
+            Sucursal.brand_id,
+            MotorcycleBrand.name.label("brand_name"),
+            Sucursal.ubicacion,
+            Sucursal.razon_social,
+            Sucursal.credit_card_payment_method,
+            Sucursal.crm_sync,
+            Sucursal.zip_code,
+            Sucursal.active,
+            Sucursal.coordinates
+        ).join(
+            MotorcycleBrand, Sucursal.brand_id == MotorcycleBrand.id
+        ).where(
+            Sucursal.active == True
+        )
         
-        # Apply holding filter if specified
-        if holding in ["Ferbel", "Sfera"]:
+        # Default filter: Only Ferbel Norte SA de CV stores
+        # Override if holding is explicitly set to "Sfera"
+        if holding == "Sfera":
             query = query.where(
                 Sucursal.razon_social.in_(
                     ["Ferbel Norte SA de CV", "Comercializadora Promotodo SA de CV"]
                 )
             )
             filter_params["holding"] = holding
+        else:
+            # Default: Only Ferbel Norte SA de CV
+            query = query.where(Sucursal.razon_social == "Ferbel Norte SA de CV")
+            filter_params["razon_social"] = "Ferbel Norte SA de CV"
         
         # Handle brand filter
         if brand:
-            # Get brand_id from brand name
-            brand_stmt = select(MotorcycleBrand).where(
+            # Filter by brand name directly in the JOIN
+            query = query.where(
                 func.lower(MotorcycleBrand.name) == func.lower(brand.strip())
             )
-            brand_result = await session.execute(brand_stmt)
-            brand_obj = brand_result.scalar_one_or_none()
-            if brand_obj:
-                query = query.where(Sucursal.brand_id == brand_obj.id)
-                filter_params["brand"] = brand
+            filter_params["brand"] = brand
         
         # Handle credit_card_payment_method filter
         if credit_card_payment_method:
@@ -122,31 +140,26 @@ async def get_stores(
             query = query.where(Sucursal.credit_card_payment_method == is_true)
             filter_params["credit_card_payment_method"] = credit_card_payment_method
         
-        # Execute query
+        # Execute optimized query
         result = await session.execute(query)
-        stores = result.scalars().all()
-        logger.info(f"Query returned {len(stores)} stores")
+        stores_rows = result.all()
+        logger.info(f"Query returned {len(stores_rows)} stores")
         
-        # Serialize results
+        # Serialize results (no additional queries needed)
         stores_data = []
-        for store in stores:
-            # Get brand name
-            brand_stmt = select(MotorcycleBrand).where(MotorcycleBrand.id == store.brand_id)
-            brand_result = await session.execute(brand_stmt)
-            brand = brand_result.scalar_one_or_none()
-            
+        for row in stores_rows:
             store_data = StoreData(
-                id=store.id,
-                nombre=store.nombre,
-                brand_id=store.brand_id,
-                brand_name=brand.name if brand else None,
-                ubicacion=store.ubicacion,
-                razon_social=store.razon_social,
-                credit_card_payment_method=store.credit_card_payment_method,
-                crm_sync=store.crm_sync,
-                zip_code=store.zip_code,
-                active=store.active,
-                coordinates=store.coordinates,
+                id=row.id,
+                nombre=row.nombre,
+                brand_id=row.brand_id,
+                brand_name=row.brand_name,
+                ubicacion=row.ubicacion,
+                razon_social=row.razon_social,
+                credit_card_payment_method=row.credit_card_payment_method,
+                crm_sync=row.crm_sync,
+                zip_code=row.zip_code,
+                active=row.active,
+                coordinates=row.coordinates,
             )
             stores_data.append(store_data)
         
@@ -154,7 +167,7 @@ async def get_stores(
             "status": "success",
             "stores_data": stores_data,
             "filters_applied": filter_params,
-            "count": len(stores),
+            "count": len(stores_data),
         }
         
         if holding:

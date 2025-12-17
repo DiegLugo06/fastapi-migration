@@ -110,3 +110,27 @@ class ContactAttemptResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class AddClientWithoutReportRequest(BaseModel):
+    """Add client without report request schema"""
+    phone: str
+    email: str
+    id_motorcycle: int
+    user_id: int
+    payment_method: str
+    preferred_store_id: Optional[int] = None
+    time_to_buy_motorcycle: Optional[str] = None
+    registration_process: Optional[str] = "manualRegistration"
+    registration_mode: Optional[str] = None
+    curp: Optional[str] = None
+    name: Optional[str] = None
+    first_last_name: Optional[str] = None
+    second_last_name: Optional[str] = None
+    second_name: Optional[str] = None
+
+
+class AddClientWithoutReportResponse(BaseModel):
+    """Add client without report response schema"""
+    message: str
+    client_id: int
+    solicitud_id: int
