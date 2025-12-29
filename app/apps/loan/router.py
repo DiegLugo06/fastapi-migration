@@ -5,18 +5,20 @@ Basic structure with essential endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List
+from decimal import Decimal, InvalidOperation
 import logging
 
 from app.database import get_async_session
 from app.apps.authentication.dependencies import get_current_user
-from app.apps.loan.models import Solicitud, Application, SolicitudStatusHistory, ContactAttempt
+from app.apps.loan.models import Solicitud, Application, SolicitudStatusHistory, ContactAttempt, ProcessType, ProcessStep
 from app.apps.loan.schemas import (
     SolicitudCreate,
     SolicitudUpdate,
     SolicitudResponse,
+    SolicitudCreateResponse,
     SendNIPRequest,
     ValidateNIPRequest,
     GetBCKibanRequest,
@@ -25,9 +27,13 @@ from app.apps.loan.schemas import (
     ContactAttemptResponse,
     AddClientWithoutReportRequest,
     AddClientWithoutReportResponse,
+    ProcessTypeResponse,
+    ProcessStepResponse,
+    ProcessStepsResponse,
 )
 from app.apps.client.models import Cliente, Report
 from app.apps.product.models import Motorcycles, MotorcycleBrand
+from app.apps.quote.models import Banco
 from sqlalchemy import or_, text
 from sqlalchemy.exc import IntegrityError
 import hashlib
@@ -45,18 +51,30 @@ async def send_nip_kiban(
 ):
     """
     Endpoint to send NIP to phone number by Kiban Service.
-    TODO: Implement kiban_api.send_nip_kiban
+    Returns: { status: "success", response: { id: <nip_request_id> } }
     """
-    logger.info("Sending NIP to Kiban service")
+    from app.apps.loan.utils.kiban_service import kiban_api
+    
+    logger.info(f"Sending NIP to Kiban service for phone: {request.to}")
     try:
-        # TODO: Implement kiban_api integration
-        # response = kiban_api.send_nip_kiban(data)
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Kiban NIP sending not yet implemented - requires kiban_api migration"
-        )
-    except HTTPException:
-        raise
+        # Convert request to dict for Kiban API
+        data = request.model_dump()
+        response = await kiban_api.send_nip_kiban(data)
+        
+        if response is None or "error" in response:
+            logger.error(
+                f"Error consulting KIBAN API for sending NIP: {response.get('error', 'Unknown error') if response else 'None response'}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Error al consultar KIBAN API",
+                    "data": response
+                }
+            )
+        
+        logger.info(f"NIP sent successfully, response: {response}")
+        return {"status": "success", "response": response}
     except Exception as e:
         logger.error(f"Error in send_nip_kiban: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -73,18 +91,30 @@ async def validate_nip_kiban(
 ):
     """
     Endpoint to validate NIP of phone number by Kiban Service.
-    TODO: Implement kiban_api.verify_nip_kiban
+    Returns: { status: "success", response: { id: <validated_id> } }
     """
-    logger.info(f"Validating NIP with Kiban service")
+    from app.apps.loan.utils.kiban_service import kiban_api
+    
+    logger.info(f"Validating NIP with Kiban service for id: {request.id}")
     try:
-        # TODO: Implement kiban_api integration
-        # response = kiban_api.verify_nip_kiban(data)
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Kiban NIP validation not yet implemented - requires kiban_api migration"
-        )
-    except HTTPException:
-        raise
+        # Convert request to dict for Kiban API
+        data = request.model_dump()
+        response = await kiban_api.verify_nip_kiban(data)
+        
+        if response is None or "error" in response:
+            logger.error(
+                f"Error consulting KIBAN API for validating NIP: {response.get('error', 'Unknown error') if response else 'None response'}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Error al consultar KIBAN API",
+                    "data": response
+                }
+            )
+        
+        logger.info(f"NIP validated successfully, response: {response}")
+        return {"status": "success", "response": response}
     except Exception as e:
         logger.error(f"Error in validate_nip_kiban: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -93,37 +123,7 @@ async def validate_nip_kiban(
         )
 
 
-@router.post("/get_bc_kiban/{cliente_id}", status_code=status.HTTP_200_OK)
-async def get_bc_kiban(
-    cliente_id: int,
-    request: GetBCKibanRequest,
-    session: AsyncSession = Depends(get_async_session),
-    current_user = Depends(get_current_user)
-):
-    """
-    Endpoint to retrieve and insert BC report from Kiban Service.
-    TODO: Implement kiban_api.query_bc_pf_by_kiban and report insertion
-    """
-    logger.info(f"Retrieving BC report for client {cliente_id} from Kiban service")
-    try:
-        # TODO: Implement kiban_api integration and report insertion
-        # report_kiban = kiban_api.query_bc_pf_by_kiban(data)
-        # insert_report(report_kiban, cliente_id)
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="BC Kiban retrieval not yet implemented - requires kiban_api and report insertion migration"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in get_bc_kiban: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred: {str(e)}"
-        )
-
-
-@router.post("/solicitud", response_model=SolicitudResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/solicitud", response_model=SolicitudCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_solicitud(
     request: SolicitudCreate,
     session: AsyncSession = Depends(get_async_session),
@@ -133,22 +133,177 @@ async def create_solicitud(
     Endpoint to create a new solicitud (loan application).
     """
     try:
-        solicitud = Solicitud(**request.dict())
+        # Get request data and filter out fields that don't exist in the database
+        request_data = request.model_dump(exclude_unset=True)
+        
+        logger.info(f"Received solicitud creation request with keys: {list(request_data.keys())}")
+        if 'solicitud_data' in request_data:
+            logger.info(f"solicitud_data contains: {list(request_data['solicitud_data'].keys()) if isinstance(request_data.get('solicitud_data'), dict) else 'not a dict'}")
+        
+        # Extract data from nested solicitud_data if it exists
+        # The frontend sends data nested in solicitud_data, but we need it at the top level
+        if 'solicitud_data' in request_data and isinstance(request_data['solicitud_data'], dict):
+            solicitud_data_nested = request_data.pop('solicitud_data')
+            # Merge nested data into main request_data
+            # Nested data takes precedence if there are conflicts (overwrites top-level values)
+            for key, value in solicitud_data_nested.items():
+                # Merge all values, we'll convert empty strings to None later
+                request_data[key] = value
+        
+        # Extract data from nested bank_data if it exists (for future use)
+        if 'bank_data' in request_data and isinstance(request_data['bank_data'], dict):
+            bank_data_nested = request_data.pop('bank_data')
+            # Merge bank_data fields if needed (currently not used but keeping for compatibility)
+            for key, value in bank_data_nested.items():
+                # Merge all values, we'll convert empty strings to None later
+                request_data[key] = value
+        
+        # Handle field name mappings from frontend to database
+        # Map old field names to new ones if they exist
+        field_mappings = {
+            'loan_term_months': 'finance_term_months',  # Map loan_term_months to finance_term_months
+            'down_payment_amount': None,  # Will be converted to percentage_down_payment if invoice_motorcycle_value exists
+            'amount_to_finance': None,  # Not used directly, but invoice_motorcycle_value should be set
+            'insurance_amount': 'insurance_payment',  # Map insurance_amount to insurance_payment
+        }
+        
+        # Apply field mappings
+        for old_field, new_field in field_mappings.items():
+            if old_field in request_data and request_data[old_field] is not None:
+                if new_field:
+                    # Map to new field name
+                    if new_field not in request_data or request_data[new_field] is None:
+                        request_data[new_field] = request_data[old_field]
+                # Remove old field after mapping
+                request_data.pop(old_field, None)
+        
+        # Remove fields that don't exist in the database model
+        # These fields are accepted in the request but the database uses different column names or doesn't have them
+        non_existent_fields = [
+            'motorcycle_id',  # Not a column, but used for lookup
+            'bank_offer_id',
+            'monthly_payment',  # Doesn't exist
+            'insurance_payment_method',  # Doesn't exist
+            'paquete',  # Doesn't exist
+            'email_notification',  # Not stored in DB, only in response
+            'flow_process',  # Not stored in DB
+        ]
+        
+        for field in non_existent_fields:
+            request_data.pop(field, None)
+        
+        # Convert empty strings to None for optional fields
+        for key, value in list(request_data.items()):
+            if value == "":
+                request_data[key] = None
+        
+        # Convert string numeric fields to Decimal if they are strings
+        numeric_fields = [
+            'invoice_motorcycle_value',
+            'percentage_down_payment',
+            'monthly_income',
+            'debt_pay_from_income',
+            'downpayment_granted',
+            'amount_to_finance_granted'
+        ]
+        
+        for field in numeric_fields:
+            if field in request_data and request_data[field] is not None:
+                value = request_data[field]
+                if isinstance(value, str):
+                    try:
+                        # Remove any whitespace and convert to Decimal
+                        request_data[field] = Decimal(str(value).strip())
+                    except (InvalidOperation, ValueError):
+                        # If conversion fails, set to None or keep as is
+                        logger.warning(f"Could not convert {field} value '{value}' to Decimal, setting to None")
+                        request_data[field] = None
+                elif isinstance(value, (int, float)):
+                    # Convert int/float to Decimal
+                    request_data[field] = Decimal(str(value))
+        
+        # Convert integer fields (year_motorcycle, cliente_id, report_id, user_id, etc.)
+        integer_fields = [
+            'year_motorcycle',
+            'cliente_id',
+            'report_id',
+            'user_id',
+            'finva_user_id',
+            'preferred_store_id'
+        ]
+        
+        for field in integer_fields:
+            if field in request_data and request_data[field] is not None:
+                value = request_data[field]
+                if isinstance(value, str):
+                    try:
+                        # Remove any whitespace and convert to int
+                        request_data[field] = int(str(value).strip())
+                    except (ValueError, TypeError):
+                        # If conversion fails, set to None
+                        logger.warning(f"Could not convert {field} value '{value}' to int, setting to None")
+                        request_data[field] = None
+                elif isinstance(value, float):
+                    # Convert float to int
+                    request_data[field] = int(value)
+        
+        # Ensure payment_method is set (required field with NOT NULL constraint)
+        payment_method = request_data.get('payment_method', 'loan')
+        if not payment_method:
+            payment_method = 'loan'  # Default value from original model
+        request_data['payment_method'] = payment_method
+        
+        # Get process_type_id from payment_method
+        process_type_id = None
+        try:
+            stmt = select(ProcessType).where(ProcessType.payment_method == payment_method)
+            result = await session.execute(stmt)
+            process_type = result.scalar_one_or_none()
+            if process_type:
+                process_type_id = process_type.id
+        except Exception as e:
+            logger.warning(f"Could not find process_type for payment_method '{payment_method}': {str(e)}")
+        
+        # Log key fields before creating solicitud for debugging
+        logger.info(f"Creating solicitud with key fields: cliente_id={request_data.get('cliente_id')}, "
+                   f"report_id={request_data.get('report_id')}, "
+                   f"brand_motorcycle={request_data.get('brand_motorcycle')}, "
+                   f"model_motorcycle={request_data.get('model_motorcycle')}, "
+                   f"year_motorcycle={request_data.get('year_motorcycle')}, "
+                   f"invoice_motorcycle_value={request_data.get('invoice_motorcycle_value')}")
+        
+        solicitud = Solicitud(**request_data)
         session.add(solicitud)
         await session.flush()
         
         # Create initial status history
+        # For the first status entry, previous_status is None and new_status is the initial status
         status_history = SolicitudStatusHistory(
             solicitud_id=solicitud.id,
-            status=solicitud.status or "created",
-            notes="Solicitud created"
+            previous_status=None,  # No previous status for initial entry
+            new_status=solicitud.status or "pending",  # Use new_status, not status
+            comment="Solicitud created",  # Use comment, not notes
+            process_type_id=process_type_id  # Set process_type_id if found
         )
         session.add(status_history)
         
         await session.commit()
         
         logger.info(f"Solicitud created successfully, ID: {solicitud.id}")
-        return SolicitudResponse.from_orm(solicitud)
+        
+        # Refresh to get all fields from database
+        await session.refresh(solicitud)
+        
+        # Use model_validate for Pydantic v2 (from_orm is deprecated)
+        solicitud_response = SolicitudResponse.model_validate(solicitud)
+        
+        # Return in the same format as original Flask implementation
+        return SolicitudCreateResponse(
+            email_notification=True,
+            message="Solicitud added successfully",
+            solicitud=solicitud_response,
+            success=True
+        )
         
     except Exception as e:
         await session.rollback()
@@ -212,24 +367,172 @@ async def update_solicitud(
                 detail="Solicitud not found"
             )
         
+        # Get request data and filter out fields that don't exist in the database
+        update_data = request.model_dump(exclude_unset=True)
+        
+        logger.info(f"Received solicitud update request for ID {solicitud_id} with keys: {list(update_data.keys())}")
+        if 'solicitud_data' in update_data:
+            logger.info(f"solicitud_data contains: {list(update_data['solicitud_data'].keys()) if isinstance(update_data.get('solicitud_data'), dict) else 'not a dict'}")
+        
+        # Extract data from nested solicitud_data if it exists
+        # The frontend sends data nested in solicitud_data, but we need it at the top level
+        if 'solicitud_data' in update_data and isinstance(update_data['solicitud_data'], dict):
+            solicitud_data_nested = update_data.pop('solicitud_data')
+            # Merge nested data into main update_data
+            # Nested data takes precedence if there are conflicts (overwrites top-level values)
+            for key, value in solicitud_data_nested.items():
+                # Merge all values, we'll convert empty strings to None later
+                update_data[key] = value
+        
+        # Extract data from nested bank_data if it exists (for future use)
+        if 'bank_data' in update_data and isinstance(update_data['bank_data'], dict):
+            bank_data_nested = update_data.pop('bank_data')
+            # Merge bank_data fields if needed (currently not used but keeping for compatibility)
+            for key, value in bank_data_nested.items():
+                # Merge all values, we'll convert empty strings to None later
+                update_data[key] = value
+        
+        # Handle field name mappings from frontend to database
+        # Map old field names to new ones if they exist
+        field_mappings = {
+            'loan_term_months': 'finance_term_months',  # Map loan_term_months to finance_term_months
+            'down_payment_amount': None,  # Will be converted to percentage_down_payment if invoice_motorcycle_value exists
+            'amount_to_finance': None,  # Not used directly, but invoice_motorcycle_value should be set
+            'insurance_amount': 'insurance_payment',  # Map insurance_amount to insurance_payment
+        }
+        
+        # Apply field mappings
+        for old_field, new_field in field_mappings.items():
+            if old_field in update_data and update_data[old_field] is not None:
+                if new_field:
+                    # Map to new field name
+                    if new_field not in update_data or update_data[new_field] is None:
+                        update_data[new_field] = update_data[old_field]
+                # Remove old field after mapping
+                update_data.pop(old_field, None)
+        
+        # Remove fields that don't exist in the database model
+        # These fields are accepted in the request but the database uses different column names or doesn't have them
+        non_existent_fields = [
+            'motorcycle_id',  # Not a column, but used for lookup
+            'bank_offer_id',
+            'monthly_payment',  # Doesn't exist
+            'insurance_payment_method',  # Doesn't exist
+            'paquete',  # Doesn't exist
+            'email_notification',  # Not stored in DB, only in response
+            'flow_process',  # Not stored in DB
+        ]
+        
+        for field in non_existent_fields:
+            update_data.pop(field, None)
+        
+        # Convert empty strings to None for optional fields
+        for key, value in list(update_data.items()):
+            if value == "":
+                update_data[key] = None
+        
+        # Convert string numeric fields to Decimal if they are strings
+        numeric_fields = [
+            'invoice_motorcycle_value',
+            'percentage_down_payment',
+            'monthly_income',
+            'debt_pay_from_income',
+            'downpayment_granted',
+            'amount_to_finance_granted'
+        ]
+        
+        for field in numeric_fields:
+            if field in update_data and update_data[field] is not None:
+                value = update_data[field]
+                if isinstance(value, str):
+                    try:
+                        # Remove any whitespace and convert to Decimal
+                        update_data[field] = Decimal(str(value).strip())
+                    except (InvalidOperation, ValueError):
+                        # If conversion fails, set to None
+                        logger.warning(f"Could not convert {field} value '{value}' to Decimal, setting to None")
+                        update_data[field] = None
+                elif isinstance(value, (int, float)):
+                    # Convert int/float to Decimal
+                    update_data[field] = Decimal(str(value))
+        
+        # Convert integer fields (year_motorcycle, cliente_id, report_id, user_id, etc.)
+        integer_fields = [
+            'year_motorcycle',
+            'cliente_id',
+            'report_id',
+            'user_id',
+            'finva_user_id',
+            'preferred_store_id'
+        ]
+        
+        for field in integer_fields:
+            if field in update_data and update_data[field] is not None:
+                value = update_data[field]
+                if isinstance(value, str):
+                    try:
+                        # Remove any whitespace and convert to int
+                        update_data[field] = int(str(value).strip())
+                    except (ValueError, TypeError):
+                        # If conversion fails, set to None
+                        logger.warning(f"Could not convert {field} value '{value}' to int, setting to None")
+                        update_data[field] = None
+                elif isinstance(value, float):
+                    # Convert float to int
+                    update_data[field] = int(value)
+        
+        # Get previous status before updating (for status history)
+        previous_status = solicitud.status if "status" in update_data else None
+        
+        # Log key fields before updating for debugging
+        logger.info(f"Updating solicitud {solicitud_id} with key fields: "
+                   f"brand_motorcycle={update_data.get('brand_motorcycle')}, "
+                   f"model_motorcycle={update_data.get('model_motorcycle')}, "
+                   f"year_motorcycle={update_data.get('year_motorcycle')}, "
+                   f"invoice_motorcycle_value={update_data.get('invoice_motorcycle_value')}")
+        
         # Update fields
-        update_data = request.dict(exclude_unset=True)
         for field, value in update_data.items():
-            setattr(solicitud, field, value)
+            # Only update fields that exist on the model
+            if hasattr(solicitud, field):
+                setattr(solicitud, field, value)
+            else:
+                logger.warning(f"Skipping field '{field}' as it doesn't exist on Solicitud model")
         
         # Create status history if status changed
-        if "status" in update_data and update_data["status"] != solicitud.status:
+        if "status" in update_data and update_data["status"] != previous_status:
+            new_status = update_data["status"]
+            
+            # Get process_type_id from payment_method if available
+            process_type_id = None
+            if hasattr(solicitud, 'payment_method') and solicitud.payment_method:
+                try:
+                    stmt = select(ProcessType).where(ProcessType.payment_method == solicitud.payment_method)
+                    result = await session.execute(stmt)
+                    process_type = result.scalar_one_or_none()
+                    if process_type:
+                        process_type_id = process_type.id
+                except Exception as e:
+                    logger.warning(f"Could not find process_type for payment_method '{solicitud.payment_method}': {str(e)}")
+            
             status_history = SolicitudStatusHistory(
                 solicitud_id=solicitud.id,
-                status=update_data["status"],
-                notes=f"Status updated to {update_data['status']}"
+                previous_status=previous_status,  # Previous status (before update)
+                new_status=new_status,  # New status (from update_data)
+                comment=f"Status updated to {new_status}",  # Use comment, not notes
+                process_type_id=process_type_id  # Set process_type_id if found
             )
             session.add(status_history)
         
         await session.commit()
         
         logger.info(f"Solicitud updated successfully, ID: {solicitud_id}")
-        return SolicitudResponse.from_orm(solicitud)
+        
+        # Refresh to get all fields from database
+        await session.refresh(solicitud)
+        
+        # Use model_validate for Pydantic v2 (from_orm is deprecated)
+        return SolicitudResponse.model_validate(solicitud)
         
     except HTTPException:
         raise
@@ -259,7 +562,7 @@ async def get_solicitud_status_history(
         result = await session.execute(stmt)
         history = result.scalars().all()
         
-        return [SolicitudStatusHistoryResponse.from_orm(h) for h in history]
+        return [SolicitudStatusHistoryResponse.model_validate(h) for h in history]
         
     except Exception as e:
         logger.error(f"Error retrieving status history: {str(e)}", exc_info=True)
@@ -494,3 +797,250 @@ async def add_client_without_report(
             detail=f"Internal server error: {str(e)}"
         )
 
+
+@router.get("/applications", response_model=dict, status_code=status.HTTP_200_OK)
+async def get_applications(
+    client_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    current_user = Depends(get_current_user)
+):
+    """
+    Endpoint to retrieve all solicitudes (applications) for a client.
+    Returns applications in the format expected by the frontend.
+    """
+    try:
+        # Use raw SQL to select only columns that exist in the database
+        # The original database has individual columns, not solicitud_data JSONB
+        stmt = text("""
+            SELECT 
+                id, 
+                cliente_id, 
+                status, 
+                created_at,
+                brand_motorcycle,
+                model_motorcycle,
+                year_motorcycle,
+                invoice_motorcycle_value
+            FROM solicitudes
+            WHERE cliente_id = :client_id
+            ORDER BY created_at DESC
+        """)
+        
+        result = await session.execute(stmt, {"client_id": client_id})
+        rows = result.fetchall()
+        
+        # Format response to match frontend expectations
+        applications = []
+        for row in rows:
+            application = {
+                "id": row.id,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "brand_motorcycle": row.brand_motorcycle or "",
+                "model_motorcycle": row.model_motorcycle or "",
+                "year_motorcycle": row.year_motorcycle if row.year_motorcycle else None,
+                "invoice_motorcycle_value": float(row.invoice_motorcycle_value) if row.invoice_motorcycle_value else None,
+                "status": row.status or "pending",
+            }
+            applications.append(application)
+        
+        return {"applications": applications}
+        
+    except Exception as e:
+        logger.error(f"Error retrieving applications: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while retrieving applications: {str(e)}"
+        )
+        
+@router.get("/evaluar/{solicitud_id}", response_model=dict, status_code=status.HTTP_200_OK)
+async def evaluate_solicitud(
+    solicitud_id: int,
+    session: AsyncSession = Depends(get_async_session),
+    current_user = Depends(get_current_user)
+):
+    """
+    Endpoint to evaluate a solicitud and return bank offers.
+    TODO: Implement actual evaluation logic with bank scoring/offers
+    """
+    try:
+        # Use the migrated evaluation logic
+        from app.apps.loan.utils.evaluate_solicitud import evaluate_solicitud_logic
+        
+        result = await evaluate_solicitud_logic(solicitud_id, session)
+        
+        # Check for errors in result
+        if "error" in result:
+            status_code = result.pop("status_code", 500)
+            raise HTTPException(
+                status_code=status_code,
+                detail=result.get("error", "Error evaluating solicitud")
+            )
+        
+        # Remove status_code from response (it's for internal use)
+        result.pop("status_code", None)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error evaluating solicitud: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while evaluating the solicitud: {str(e)}"
+        )
+
+@router.post("/get_bc_kiban/{cliente_id}", status_code=status.HTTP_200_OK)
+async def get_bc_kiban(
+    cliente_id: int,
+    request: GetBCKibanRequest,
+    session: AsyncSession = Depends(get_async_session),
+    current_user = Depends(get_current_user)
+):
+    """
+    Endpoint to retrieve and insert BC report from Kiban Service.
+    Returns: { report_id: <report_id>, cliente_id: <cliente_id> }
+    """
+    from app.apps.loan.utils.kiban_service import kiban_api
+    from app.apps.loan.utils.insert_report_data import insert_report, insert_report_data_bulk
+    
+    logger.info(f"Retrieving BC report for client {cliente_id} from Kiban service")
+    try:
+        # Convert request to dict for Kiban API
+        data = request.model_dump()
+        
+        # Query BC report from Kiban API
+        report_kiban = await kiban_api.query_bc_pf_by_kiban(data)
+        
+        if report_kiban is None or "error" in report_kiban:
+            logger.error(
+                f"Error retrieving BC report from Kiban for client {cliente_id}, {report_kiban}, body: {data}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Error al consultar KIBAN API",
+                    "data": report_kiban
+                }
+            )
+        
+        # Insert the report
+        report = await insert_report(report_kiban, cliente_id, session)
+        
+        if report is None or "error" in report:
+            logger.error(
+                f'Error creating report for client {cliente_id}: {report.get("error", "Unknown error") if report else "None response"}'
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Error al crear reporte",
+                    "data": report
+                }
+            )
+        
+        logger.info(
+            f'Report created successfully for client {cliente_id}, report ID: {report["id"]}'
+        )
+        
+        # Insert all report data using the utility function
+        if "response" in report_kiban:
+            insert_results = await insert_report_data_bulk(report["id"], report_kiban["response"], session)
+            
+            # Log the results
+            if insert_results["total_failed"] > 0:
+                logger.warning(
+                    f'Some insert functions failed for report ID: {report["id"]}. '
+                    f'Successful: {insert_results["total_successful"]}, '
+                    f'Failed: {insert_results["total_failed"]}, '
+                    f'Failures: {insert_results["failed"]}'
+                )
+            else:
+                logger.info(
+                    f'All insert functions completed successfully for report ID: {report["id"]}'
+                )
+        
+        response = {
+            "success": True,
+            "message": "Report/ConsultaBC added and client data updated successfully",
+            "report_id": report["id"],
+            "cliente_id": cliente_id,
+        }
+        
+        logger.info(
+            f'Report and associated data inserted successfully for client {cliente_id}, report ID: {report["id"]}'
+        )
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_bc_kiban: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while retrieving BC report: {str(e)}"
+        )
+
+
+@router.get("/process-steps/{payment_method}", response_model=ProcessStepsResponse, status_code=status.HTTP_200_OK)
+async def get_process_steps(
+    payment_method: str,
+    session: AsyncSession = Depends(get_async_session),
+    current_user = Depends(get_current_user)
+):
+    """
+    Get all process steps for a given payment method.
+    Migrated from Flask app/loan/routes.py
+    """
+    try:
+        # Get process type based on payment method
+        stmt = select(ProcessType).where(ProcessType.payment_method == payment_method)
+        result = await session.execute(stmt)
+        process_type = result.scalar_one_or_none()
+        
+        if not process_type:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No process type found for payment method: {payment_method}"
+            )
+        
+        # Get all process steps for this process type
+        stmt = select(ProcessStep).where(
+            ProcessStep.process_type_id == process_type.id
+        ).order_by(ProcessStep.step_order)
+        result = await session.execute(stmt)
+        process_steps = result.scalars().all()
+        
+        steps_data = [
+            ProcessStepResponse(
+                id=step.id,
+                process_type_id=step.process_type_id,
+                step_order=step.step_order,
+                step_name=step.step_name
+            )
+            for step in process_steps
+        ]
+        
+        return ProcessStepsResponse(
+            process_type=process_type.name,
+            payment_method=payment_method,
+            steps=steps_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_process_steps: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while retrieving process steps: {str(e)}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_bc_kiban: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )

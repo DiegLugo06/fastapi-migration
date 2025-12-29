@@ -2,7 +2,7 @@
 Pydantic schemas for client module
 """
 from pydantic import BaseModel, EmailStr, Field, validator
-from typing import Optional, List, Any, Union
+from typing import Optional, List, Any, Union, Dict
 from datetime import datetime, date
 
 
@@ -190,3 +190,68 @@ class ClientesUnknownResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+# CURP Validation Schemas
+class ValidateCurpRequest(BaseModel):
+    """Validate CURP request schema"""
+    curp: str = Field(..., min_length=18, max_length=18, description="CURP to validate (18 characters)")
+
+    @validator('curp')
+    def validate_curp_format(cls, v):
+        if not v or len(v) != 18:
+            raise ValueError('CURP must be exactly 18 characters')
+        return v.strip().upper()
+
+
+class ValidateCurpResponse(BaseModel):
+    """Validate CURP response schema"""
+    success: bool
+    client_data: Optional[Dict[str, Any]] = None
+    status: str
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    original_message: Optional[str] = None
+    service: Optional[str] = None
+    curp: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class GenerateCurpRequest(BaseModel):
+    """Generate CURP request schema"""
+    claveEntidad: str = Field(..., description="State code (e.g., DF, MX)")
+    fechaNacimiento: str = Field(..., description="Birth date (YYYY-MM-DD)")
+    nombres: str = Field(..., description="First name(s)")
+    primerApellido: str = Field(..., description="First last name")
+    segundoApellido: str = Field(..., description="Second last name")
+    sexo: str = Field(..., description="Gender (H or M)")
+
+
+class GenerateCurpResponse(BaseModel):
+    """Generate CURP response schema"""
+    client_data: Dict[str, Any]
+    status: str
+    curp: Optional[str] = None
+
+
+class ValidateCredentialCompleteRequest(BaseModel):
+    """Manual validation request schema"""
+    cic: Optional[str] = None
+    id_citizen: Optional[str] = None
+    curp: Optional[str] = None
+
+
+class ValidateCredentialCompleteResponse(BaseModel):
+    """Validate credential complete response schema"""
+    curp: Optional[str] = None
+    rfc: Optional[str] = None
+    front_info: Optional[Dict[str, Any]] = None
+    back_info: Optional[Dict[str, Any]] = None
+    body_validate_ine: Optional[Dict[str, Any]] = None
+    validation_results: Dict[str, Any]
+    validation_details: Dict[str, Any]
+    is_valid: bool
+    timing_metrics: Dict[str, float]
+    ine_validation_message: Optional[str] = None
+    ine_validation_clave_mensaje: Optional[str] = None
+    ine_validation_user_message: Optional[str] = None
+    id_number: Optional[str] = None
